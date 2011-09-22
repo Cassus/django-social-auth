@@ -56,6 +56,15 @@ class FacebookAuth(BaseOAuth):
         """Returns redirect url"""
         state = get_hexdigest('md5', str(random()), str(random()))[:6]
         self.request.session['state'] = state
+
+        #TODO for debugging
+        meta = {}
+        for key in ('HTTP_COOKIE', 'HTTP_USER_AGENT', 'REQUEST_URI', 'REMOTE_ADDR'):
+            if key in self.request.META:
+                meta[key] = self.request.META[key]
+        logging.getLogger('social_auth').info('fb_state_set %s %s' % (state, meta))
+        #end debugging
+
         args = {'client_id': settings.FACEBOOK_APP_ID,
                 'redirect_uri': self.redirect_uri,
                 'state': state,
@@ -71,7 +80,11 @@ class FacebookAuth(BaseOAuth):
             facebook_state = self.data['state']
             if facebook_state != session_state:
                 #TODO remove logging before merging to Trunk
-                logging.getLogger('social_auth').warning('invalid_or_missing_state session: %s facebook: %s' % (session_state, facebook_state))
+                meta = {}
+                for key in ('HTTP_COOKIE', 'HTTP_USER_AGENT', 'REQUEST_URI', 'REMOTE_ADDR'):
+                    if key in self.request.META:
+                        meta[key] = self.request.META[key]
+                logging.getLogger('social_auth').warning('invalid_or_missing_state %s %s %s' % (session_state, facebook_state, meta))
                 #error = "invalid or missing state"
                 #raise ValueError('Authentication error: %s' % error)
 
