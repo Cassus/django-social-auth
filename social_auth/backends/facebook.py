@@ -15,7 +15,7 @@ import cgi
 import logging
 from random import random
 from urllib import urlencode
-from urllib2 import urlopen
+from urllib2 import urlopen, URLError
 
 from django.conf import settings
 from django.contrib.auth.models import get_hexdigest
@@ -93,7 +93,12 @@ class FacebookAuth(BaseOAuth):
                                 'redirect_uri': self.redirect_uri,
                                 'client_secret': settings.FACEBOOK_API_SECRET,
                                 'code': self.data['code']})
-            response = cgi.parse_qs(urlopen(url).read())
+            try:
+                response = cgi.parse_qs(urlopen(url, timeout=30).read())
+            except URLError, e:
+                logging.getLogger('social_auth').error('facebook_url_error %e' % e.message)
+                raise ValueError(e.message)
+                
             access_token = response['access_token'][0]
             data = self.user_data(access_token)
             if data is not None:
@@ -116,8 +121,8 @@ class FacebookAuth(BaseOAuth):
         params = {'access_token': access_token,}
         url = FACEBOOK_CHECK_AUTH + '?' + urlencode(params)
         try:
-            return simplejson.load(urlopen(url))
-        except ValueError:
+            return simplejson.load(urlopen(url, timeout=30))
+        except (URLError, ValueError):
             return None
 
     @classmethod
