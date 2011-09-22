@@ -101,15 +101,11 @@ class FacebookAuth(BaseOAuth):
                 
             access_token = response['access_token'][0]
             data = self.user_data(access_token)
-            if data is not None:
-                if 'error' in data:
-                    error = self.data.get('error') or 'unknown error'
-                    raise ValueError('Authentication error: %s' % error)
-                data['access_token'] = access_token
-                # expires will not be part of response if offline access
-                # premission was requested
-                if 'expires' in response:
-                    data['expires'] = response['expires'][0]
+            data['access_token'] = access_token
+            # expires will not be part of response if offline access
+            # premission was requested
+            if 'expires' in response:
+                data['expires'] = response['expires'][0]
             kwargs.update({'response': data, FacebookBackend.name: True})
             return authenticate(*args, **kwargs)
         else:
@@ -118,12 +114,18 @@ class FacebookAuth(BaseOAuth):
 
     def user_data(self, access_token):
         """Loads user data from service"""
-        params = {'access_token': access_token,}
+        params = {'access_token': access_token, }
         url = FACEBOOK_CHECK_AUTH + '?' + urlencode(params)
         try:
-            return simplejson.load(urlopen(url, timeout=30))
-        except (URLError, ValueError):
-            return None
+            data = simplejson.load(urlopen(url, timeout=30))
+        except (URLError, ValueError), e:
+            raise ValueError('Authentication error: %s' % e.message)
+        if not isinstance(data, dict):
+            raise ValueError('Authentication error: bad_response_type')
+        if 'error' in data:
+            error = self.data.get('error') or 'unknown error'
+            raise ValueError('Authentication error: %s' % error)
+        return data
 
     @classmethod
     def enabled(cls):
