@@ -12,6 +12,7 @@ By default account id and token expiration time are stored in extra_data
 field, check OAuthBackend class for details on how to extend it.
 """
 import cgi
+import logging
 from random import random
 from urllib import urlencode
 from urllib2 import urlopen
@@ -66,9 +67,13 @@ class FacebookAuth(BaseOAuth):
     def auth_complete(self, *args, **kwargs):
         """Returns user, might be logged in"""
         if 'code' in self.data:
-#            if self.data['state'] != self.request.session['state']:
-#                error = "invalid or missing state"
-#                raise ValueError('Authentication error: %s' % error)
+            session_state = self.request.session.get('state')
+            facebook_state = self.data['state']
+            if facebook_state != session_state:
+                #TODO remove logging before merging to Trunk
+                logging.getLogger('social_auth').warning('invalid_or_missing_state session: %s facebook: %s' % (session_state, facebook_state))
+                #error = "invalid or missing state"
+                #raise ValueError('Authentication error: %s' % error)
 
             url = FACEBOOK_ACCESS_TOKEN_URL + '?' + \
                   urlencode({'client_id': settings.FACEBOOK_APP_ID,
