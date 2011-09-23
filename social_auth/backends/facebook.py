@@ -53,7 +53,9 @@ class FacebookAuth(BaseOAuth):
 
     def get_fb_csrf_token(self):
         session_key = self.request.session.session_key
-        return get_hexdigest('md5', session_key, settings.FACEBOOK_API_SECRET)[:6]
+        fb_csrf_token = get_hexdigest('md5', session_key, settings.FACEBOOK_API_SECRET)[:6]
+        self.request.session['fb_csrf_token'] = fb_csrf_token
+        return fb_csrf_token
 
     def auth_url(self):
         """Returns redirect url"""
