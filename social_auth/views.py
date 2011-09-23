@@ -6,6 +6,7 @@ Notes:
       token back.
 """
 from functools import wraps
+import logging
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, HttpResponse, \
@@ -210,4 +211,5 @@ def auth_complete(request, backend, user=None):
         error_key = getattr(settings, 'SOCIAL_AUTH_ERROR_KEY', None)
         if error_key:  # store error in session
             request.session[error_key] = str(e)
+        logging.getLogger('social_auth').warning('general_error %s' % e)
     return user

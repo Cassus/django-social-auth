@@ -13,7 +13,6 @@ field, check OAuthBackend class for details on how to extend it.
 """
 import cgi
 import logging
-from random import random
 from urllib import urlencode
 from urllib2 import urlopen, URLError
 
@@ -52,22 +51,27 @@ class FacebookAuth(BaseOAuth):
     """Facebook OAuth mechanism"""
     AUTH_BACKEND = FacebookBackend
 
+    def get_fb_csrf_token(self):
+        session_key = self.request.session.session_key
+        return get_hexdigest('md5', session_key, settings.FACEBOOK_API_SECRET)[:6]
+
     def auth_url(self):
         """Returns redirect url"""
-        state = get_hexdigest('md5', str(random()), str(random()))[:6]
-        self.request.session['state'] = state
+
+        fb_CSRF_state = self.get_fb_csrf_token()
 
         #TODO for debugging
         meta = {}
         for key in ('HTTP_COOKIE', 'HTTP_USER_AGENT', 'REQUEST_URI', 'REMOTE_ADDR'):
             if key in self.request.META:
                 meta[key] = self.request.META[key]
-        logging.getLogger('social_auth').info('fb_state_set %s %s' % (state, meta))
+        logging.getLogger('social_auth').info(
+            'fb_state_set %s %s %s' % (fb_CSRF_state, self.request.session.session_key, meta))
         #end debugging
 
         args = {'client_id': settings.FACEBOOK_APP_ID,
                 'redirect_uri': self.redirect_uri,
-                'state': state,
+                'state': fb_CSRF_state,
                 }
         if hasattr(settings, 'FACEBOOK_EXTENDED_PERMISSIONS'):
             args['scope'] = ','.join(settings.FACEBOOK_EXTENDED_PERMISSIONS)
@@ -76,15 +80,18 @@ class FacebookAuth(BaseOAuth):
     def auth_complete(self, *args, **kwargs):
         """Returns user, might be logged in"""
         if 'code' in self.data:
-            session_state = self.request.session.get('state')
+            local_state = self.get_fb_csrf_token()
             facebook_state = self.data['state']
-            if facebook_state != session_state:
+            if facebook_state != local_state:
                 #TODO remove logging before merging to Trunk
                 meta = {}
                 for key in ('HTTP_COOKIE', 'HTTP_USER_AGENT', 'REQUEST_URI', 'REMOTE_ADDR'):
                     if key in self.request.META:
                         meta[key] = self.request.META[key]
-                logging.getLogger('social_auth').warning('invalid_or_missing_state %s %s %s' % (session_state, facebook_state, meta))
+                logging.getLogger('social_auth').warning(
+                    'invalid_or_missing_state %s %s %s %s' % (
+                        local_state, facebook_state, self.request.session.session_key, meta)
+                )
                 #error = "invalid or missing state"
                 #raise ValueError('Authentication error: %s' % error)
 
