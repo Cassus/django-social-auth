@@ -96,7 +96,7 @@ class FacebookAuth(BaseOAuth):
             try:
                 response = cgi.parse_qs(urlopen(url, timeout=30).read())
             except URLError, e:
-                logging.getLogger('social_auth').error('facebook_url_error %e' % e.message)
+                logging.getLogger('social_auth').error('facebook_url_error %s' % e.message)
                 raise ValueError(e.message)
                 
             access_token = response['access_token'][0]
