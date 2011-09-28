@@ -161,13 +161,14 @@ def auth_process(request, backend):
         return HttpResponse(backend.auth_html(),
                             content_type='text/html;charset=UTF-8')
 
+class HttpResponseException(Exception):
+    def __init__(self, response):
+        self.response = response
 
 def complete_process(request, backend, *args, **kwargs):
     """Authentication complete process"""
-    user = auth_complete(request, backend, *args, **kwargs)
-
     try:
-        user = auth_complete(request, backend)
+        user = auth_complete(request, backend, *args, **kwargs)
     except HttpResponseException, e :
         return e.response
 
@@ -202,4 +203,5 @@ def auth_complete(request, backend, user=None, *args, **kwargs):
     """Complete auth process. Return authenticated user or None."""
     if user and not user.is_authenticated():
         user = None
+    kwargs.update({'request': request})
     return backend.auth_complete(user=user, *args, **kwargs)

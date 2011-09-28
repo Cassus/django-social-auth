@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 import cgi
 from urllib import urlencode
-from urllib2 import urlopen
+from urllib2 import urlopen, URLError
 
 from django.conf import settings
 from django.utils import simplejson
@@ -63,13 +63,13 @@ class FacebookAuth(BaseOAuth2):
         params = {'access_token': access_token,}
         url = 'https://graph.facebook.com/me?' + urlencode(params)
         try:
-            data = simplejson.load(urlopen(url, 30))
+            data = simplejson.load(urlopen(url, timeout=30))
             logger.debug('Found user data for token %s',
                          sanitize_log_data(access_token),
                          extra=dict(data=data))
             return data
 
-        except ValueError:
+        except (ValueError, URLError):
             params.update({'access_token': sanitize_log_data(access_token)})
             logger.error('Could not load user data from Facebook.',
                          exc_info=True, extra=dict(data=params))
@@ -83,13 +83,19 @@ class FacebookAuth(BaseOAuth2):
                              'redirect_uri': self.redirect_uri,
                              'client_secret': settings.FACEBOOK_API_SECRET,
                              'code': self.data['code']})
-            response = cgi.parse_qs(urlopen(url, 30).read())
+            try:
+                response = cgi.parse_qs(urlopen(url, timeout=30).read())
+            except URLError:
+                logger.error('Could not authenticate user from Facebook.',
+                             exc_info=True, extra=dict(data=self.data))
+                return None
             access_token = response['access_token'][0]
             data = self.user_data(access_token)
             if data is not None:
                 if 'error' in data:
-                    error = self.data.get('error') or 'unknown error'
-                    raise ValueError('Authentication error: %s' % error)
+                    logger.error('Could not authenticate user from Facebook.',
+                                 exc_info=True, extra=dict(data=self.data))
+                    return None
                 data['access_token'] = access_token
                 # expires will not be part of response if offline access
                 # premission was requested
@@ -98,8 +104,9 @@ class FacebookAuth(BaseOAuth2):
             kwargs.update({'response': data, self.AUTH_BACKEND.name: True})
             return authenticate(*args, **kwargs)
         else:
-            error = self.data.get('error') or 'unknown error'
-            raise ValueError('Authentication error: %s' % error)
+            logger.error('Could not authenticate user from Facebook.',
+                         exc_info=True, extra=dict(data=self.data))
+            return None
 
     @classmethod
     def enabled(cls):

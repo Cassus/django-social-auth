@@ -108,6 +108,7 @@ class SocialAuthBackend(ModelBackend):
 
         response = kwargs.get('response')
         details = self.get_user_details(response)
+        kwargs['details'] = details
         uid = self.get_user_id(details, response)
         is_new = False
         user = kwargs.get('user')
