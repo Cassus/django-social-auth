@@ -195,6 +195,7 @@ def complete_process(request, backend, *args, **kwargs):
               request.session.pop(REDIRECT_FIELD_NAME, '') or \
               DEFAULT_REDIRECT
     else:
+        logger.warning("Inactive user can't log in %s" % user)
         url = LOGIN_ERROR_URL
     return HttpResponseRedirect(url)
 
