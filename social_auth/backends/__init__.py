@@ -9,13 +9,16 @@ Also the modules *must* define a BACKENDS dictionary with the backend name
 (which is used for URLs matching) and Auth class, otherwise it won't be
 enabled.
 """
+import logging
+logger = logging.getLogger(__name__)
+
 from django.dispatch.dispatcher import _make_id
 from os import walk
 from os.path import basename
 from uuid import uuid4
 from urllib2 import Request, urlopen
 from urllib import urlencode
-from httplib import HTTPSConnection
+from urlparse import urlsplit
 
 from openid.consumer.consumer import Consumer, SUCCESS, CANCEL, FAILURE
 from openid.consumer.discover import DiscoveryFailure
@@ -30,10 +33,13 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.backends import ModelBackend
 from django.utils import simplejson
 from django.utils.importlib import import_module
+from django.db.utils import IntegrityError
 
 from social_auth.models import UserSocialAuth
 from social_auth.store import DjangoOpenIDStore
-from social_auth.signals import pre_update, socialauth_registered, create_user
+from social_auth.signals import pre_update, socialauth_registered, \
+                                socialauth_not_registered, create_user
+from social_auth.utils import sanitize_log_data
 
 
 # OpenID configuration
@@ -86,37 +92,6 @@ class SocialAuthBackend(ModelBackend):
     a authentication provider response"""
     name = ''  # provider name, it's stored in database
 
-    def get_or_create_user(self, **kwargs):
-        details = kwargs['details']
-        user = None
-
-        email = details.get('email')
-        if email and ASSOCIATE_BY_MAIL:
-            # try to associate accounts registered with the same email
-            # address, only if it's a single object. ValueError is
-            # raised if multiple objects are returned
-            try:
-                user = User.objects.get(email=email)
-            except MultipleObjectsReturned:
-                raise ValueError('Not unique email address supplied')
-            except User.DoesNotExist:
-                pass
-
-        if user is None and create_user.receivers:
-            sender = self.__class__
-            for receiver in create_user._live_receivers(_make_id(sender)):
-                user = receiver(signal=create_user, sender=sender, **kwargs)
-                if user is not None:
-                    user.is_new = True
-                    break
-
-        if user is None and CREATE_USERS:
-            username = self.username(details)
-            user = User.objects.create_user(username=username,
-                                            email=email)
-            user.is_new = True
-        return user
-
     def authenticate(self, *args, **kwargs):
         """Authenticate user using social credentials
 
@@ -133,7 +108,6 @@ class SocialAuthBackend(ModelBackend):
 
         response = kwargs.get('response')
         details = self.get_user_details(response)
-        kwargs['details'] = details
         uid = self.get_user_id(details, response)
         is_new = False
         user = kwargs.get('user')
@@ -141,20 +115,57 @@ class SocialAuthBackend(ModelBackend):
         try:
             social_user = self.get_social_auth_user(uid)
         except UserSocialAuth.DoesNotExist:
+            if user is None and create_user.receivers:
+                sender = self.__class__
+                for receiver in create_user._live_receivers(_make_id(sender)):
+                    user = receiver(signal=create_user, sender=sender, **kwargs)
+                    if user is not None:
+                        is_new = True
+                        break
+            
             if user is None:  # new user
-                user = self.get_or_create_user(**kwargs)
-            if user is None:
-                return None
-            social_user = self.associate_auth(user, uid, response, details)
-        else:
-            # This account was registered to another user, so we raise an
-            # error in such case and the view should decide what to do on
-            # at this moment, merging account is not an option because that
-            # would imply update user references on other apps, that's too
-            # much intrusive
-            if user and user != social_user.user:
-                raise ValueError('Account already in use.', social_user)
-            user = social_user.user
+                if not CREATE_USERS or not kwargs.get('create_user', True):
+                    # Send signal for cases where tracking failed registering
+                    # is useful.
+                    socialauth_not_registered.send(sender=self.__class__,
+                                                   uid=uid,
+                                                   response=response,
+                                                   details=details)
+                    return None
+
+                email = details.get('email')
+                if email and ASSOCIATE_BY_MAIL:
+                    # try to associate accounts registered with the same email
+                    # address, only if it's a single object. ValueError is
+                    # raised if multiple objects are returned
+                    try:
+                        user = User.objects.get(email=email)
+                    except MultipleObjectsReturned:
+                        raise ValueError('Not unique email address supplied')
+                    except User.DoesNotExist:
+                        user = None
+                if not user:
+                    username = self.username(details)
+                    logger.debug('Creating new user with username %s and email %s',
+                                 username, sanitize_log_data(email))
+                    user = User.objects.create_user(username=username,
+                                                    email=email)
+                    is_new = True
+
+            try:
+                social_user = self.associate_auth(user, uid, response, details)
+            except IntegrityError:
+                # Protect for possible race condition, those bastard with FTL
+                # clicking capabilities
+                social_user = self.get_social_auth_user(uid)
+
+        # Raise ValueError if this account was registered by another user.
+        if user and user != social_user.user:
+            raise ValueError('Account already in use.', social_user)
+        user = social_user.user
+
+        # Flag user "new" status
+        setattr(user, 'is_new', is_new)
 
         # Update extra_data storage, unless disabled by setting
         if LOAD_EXTRA_DATA:
@@ -224,11 +235,14 @@ class SocialAuthBackend(ModelBackend):
 
         # check if values update should be left to signals handlers only
         if not CHANGE_SIGNAL_ONLY:
+            logger.debug('Updating user details for user %s', user,
+                         extra=dict(data=details))
+
             for name, value in details.iteritems():
                 # do not update username, it was already generated by
                 # self.username(...) and loaded in given instance
                 if name != USERNAME and value and value != getattr(user, name,
-                                                                   value):
+                                                                   None):
                     setattr(user, name, value)
                     changed = True
 
@@ -432,6 +446,13 @@ class BaseAuth(object):
         """Completes loging process, must return user instance"""
         raise NotImplementedError('Implement in subclass')
 
+    def auth_extra_arguments(self):
+        """Return extra argumens needed on auth process, setting is per bancked
+        and defined by <backend name in uppercase>_AUTH_EXTRA_ARGUMENTS.
+        """
+        name = self.AUTH_BACKEND.name.upper() + '_AUTH_EXTRA_ARGUMENTS'
+        return getattr(settings, name, {})
+
     @property
     def uses_redirect(self):
         """Return True if this provider uses redirect url method,
@@ -459,14 +480,14 @@ class OpenIdAuth(BaseAuth):
 
     def auth_url(self):
         """Return auth URL returned by service"""
-        openid_request = self.setup_request()
+        openid_request = self.setup_request(self.auth_extra_arguments())
         # Construct completion URL, including page we should redirect to
         return_to = self.request.build_absolute_uri(self.redirect)
         return openid_request.redirectURL(self.trust_root(), return_to)
 
     def auth_html(self):
         """Return auth HTML returned by service"""
-        openid_request = self.setup_request()
+        openid_request = self.setup_request(self.auth_extra_arguments())
         return_to = self.request.build_absolute_uri(self.redirect)
         form_tag = {'id': 'openid_message'}
         return openid_request.htmlMarkup(self.trust_root(), return_to,
@@ -495,9 +516,9 @@ class OpenIdAuth(BaseAuth):
             raise ValueError('Unknown OpenID response type: %r' % \
                              response.status)
 
-    def setup_request(self):
+    def setup_request(self, extra_params=None):
         """Setup request"""
-        openid_request = self.openid_request()
+        openid_request = self.openid_request(extra_params)
         # Request some user details. Use attribute exchange if provider
         # advertises support.
         if openid_request.endpoint.supportsType(ax.AXMessage.ns_uri):
@@ -522,22 +543,19 @@ class OpenIdAuth(BaseAuth):
         """Return true if openid request will be handled with redirect or
         HTML content will be returned.
         """
-        if not hasattr(self, '_uses_redirect'):
-            setattr(self, '_uses_redirect',
-                    self.openid_request().shouldSendRedirect())
-        return getattr(self, '_uses_redirect', True)
+        return self.openid_request().shouldSendRedirect()
 
-    def openid_request(self):
+    def openid_request(self, extra_params=None):
         """Return openid request"""
-        if not hasattr(self, '_openid_request'):
-            openid_url = self.openid_url()
-            try:
-                openid_request = self.consumer().begin(openid_url)
-            except DiscoveryFailure, err:
-                raise ValueError('OpenID discovery error: %s' % err)
-            else:
-                setattr(self, '_openid_request', openid_request)
-        return getattr(self, '_openid_request', None)
+        openid_url = self.openid_url()
+        if extra_params:
+            query = urlsplit(openid_url).query
+            openid_url += (query and '&' or '?') + urlencode(extra_params)
+
+        try:
+            return self.consumer().begin(openid_url)
+        except DiscoveryFailure, err:
+            raise ValueError('OpenID discovery error: %s' % err)
 
     def openid_url(self):
         """Return service provider URL.
@@ -577,7 +595,8 @@ class ConsumerBasedOAuth(BaseOAuth):
         token = self.unauthorized_token()
         name = self.AUTH_BACKEND.name + 'unauthorized_token_name'
         self.request.session[name] = token.to_string()
-        return self.oauth_request(token, self.AUTHORIZATION_URL).to_url()
+        return self.oauth_request(token, self.AUTHORIZATION_URL,
+                                  self.auth_extra_arguments()).to_url()
 
     def auth_complete(self, *args, **kwargs):
         """Return user, might be logged in"""
@@ -621,9 +640,8 @@ class ConsumerBasedOAuth(BaseOAuth):
 
     def fetch_response(self, request):
         """Executes request and fetchs service response"""
-        connection = HTTPSConnection(self.SERVER_URL)
-        connection.request(request.method.upper(), request.to_url())
-        return connection.getresponse().read()
+        response = urlopen(request.to_url())
+        return '\n'.join(response.readlines())
 
     def access_token(self, token):
         """Return request for access token value"""
@@ -637,11 +655,7 @@ class ConsumerBasedOAuth(BaseOAuth):
     @property
     def consumer(self):
         """Setups consumer"""
-        consumer = getattr(self, '_consumer', None)
-        if consumer is None:
-            consumer = OAuthConsumer(*self.get_key_and_secret())
-            setattr(self, '_consumer', consumer)
-        return consumer
+        return OAuthConsumer(*self.get_key_and_secret())
 
     def get_key_and_secret(self):
         """Return tuple with Consumer Key and Consumer Secret for current
@@ -669,18 +683,29 @@ class BaseOAuth2(BaseOAuth):
     """
     AUTHORIZATION_URL = None
     ACCESS_TOKEN_URL = None
+    SCOPE_SEPARATOR = ' '
+    RESPONSE_TYPE = 'code'
 
     def auth_url(self):
         """Return redirect url"""
         client_id, client_secret = self.get_key_and_secret()
-        args = {'client_id': client_id,
-                'scope': ' '.join(self.get_scope()),
-                'redirect_uri': self.redirect_uri,
-                'response_type': 'code'}  # requesting code
+        args = {'client_id': client_id, 'redirect_uri': self.redirect_uri}
+
+        scope = self.get_scope()
+        if scope:
+            args['scope'] = self.SCOPE_SEPARATOR.join(self.get_scope())
+        if self.RESPONSE_TYPE:
+            args['response_type'] = self.RESPONSE_TYPE
+
+        args.update(self.auth_extra_arguments())
         return self.AUTHORIZATION_URL + '?' + urlencode(args)
 
     def auth_complete(self, *args, **kwargs):
         """Completes loging process, must return user instance"""
+        if self.data.get('error'):
+            error = self.data.get('error_description') or self.data['error']
+            raise ValueError('OAuth2 authentication failed: %s' % error)
+
         client_id, client_secret = self.get_key_and_secret()
         params = {'grant_type': 'authorization_code',  # request auth code
                   'code': self.data.get('code', ''),  # server response code
@@ -730,6 +755,7 @@ def get_backends():
         try:
             mod = import_module(mod_name)
         except ImportError:
+            logger.exception('Error importing %s', mod_name)
             continue
 
         for directory, subdir, files in walk(mod.__path__[0]):

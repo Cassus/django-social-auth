@@ -5,13 +5,15 @@ Notes:
       on third party providers that (if using POST) won't be sending crfs
       token back.
 """
+import logging
+logger = logging.getLogger(__name__)
+
 from functools import wraps
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, HttpResponse, \
                         HttpResponseServerError
 from django.core.urlresolvers import reverse
-from django.db import transaction
 from django.contrib.auth import login, REDIRECT_FIELD_NAME
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
@@ -22,6 +24,7 @@ from social_auth.utils import sanitize_redirect
 
 def _setting(name, default=''):
     return getattr(settings, name, default)
+
 
 DEFAULT_REDIRECT = _setting('SOCIAL_AUTH_LOGIN_REDIRECT_URL') or \
                    _setting('LOGIN_REDIRECT_URL')
@@ -35,6 +38,11 @@ ASSOCIATE_URL_NAME = _setting('SOCIAL_AUTH_ASSOCIATE_URL_NAME',
 SOCIAL_AUTH_LAST_LOGIN = _setting('SOCIAL_AUTH_LAST_LOGIN',
                                   'social_auth_last_login_backend')
 SESSION_EXPIRATION = _setting('SOCIAL_AUTH_SESSION_EXPIRATION', True)
+BACKEND_ERROR_REDIRECT = _setting('SOCIAL_AUTH_BACKEND_ERROR_URL',
+                                  LOGIN_ERROR_URL)
+ERROR_KEY = _setting('SOCIAL_AUTH_BACKEND_ERROR', 'socialauth_backend_error')
+NAME_KEY = _setting('SOCIAL_AUTH_BACKEND_KEY', 'socialauth_backend_name')
+SANITIZE_REDIRECTS = _setting('SOCIAL_AUTH_SANITIZE_REDIRECTS', True)
 
 
 def dsa_view(redirect_name=None):
@@ -55,7 +63,35 @@ def dsa_view(redirect_name=None):
             if not backend:
                 return HttpResponseServerError('Incorrect authentication ' + \
                                                'service')
-            return func(request, backend, *args, **kwargs)
+
+            try:
+                return func(request, backend, *args, **kwargs)
+            except Exception, e:  # some error ocurred
+                backend_name = backend.AUTH_BACKEND.name
+
+                logger.error(unicode(e), exc_info=True,
+                             extra=dict(request=request))
+
+                # Why!?
+                msg = str(e)
+
+                if 'django.contrib.messages' in settings.INSTALLED_APPS:
+                    from django.contrib.messages.api import error
+                    error(request, msg, extra_tags=backend_name)
+                else:
+                    logger.warn('Messages framework not in place, some '+
+                                'errors have not been shown to the user.')
+                # What's the use in this, having not both the messages
+                # framework and decent logging in place?
+                # Also: do we really want to share all and any errors back
+                # to the user, in a security-wise sensitive application?
+                #
+                # else:
+                #     if ERROR_KEY:  # store error in session
+                #         request.session[ERROR_KEY] = msg
+                #     if NAME_KEY:  # store the backend name for convenience
+                #         request.session[NAME_KEY] = backend_name
+                return HttpResponseRedirect(BACKEND_ERROR_REDIRECT)
         return wrapper
     return dec
 
@@ -67,46 +103,11 @@ def auth(request, backend):
 
 
 @csrf_exempt
-@transaction.commit_on_success
 @dsa_view()
-def complete(request, backend):
+def complete(request, backend, *args, **kwargs):
     """Authentication complete view, override this view if transaction
     management doesn't suit your needs."""
-    return complete_process(request, backend)
-
-
-def complete_process(request, backend):
-    """Authentication complete process"""
-    try:
-        user = auth_complete(request, backend)
-    except HttpResponse as response:
-        return response
-
-    if user and getattr(user, 'is_active', True):
-        login(request, user)
-        # user.social_user is the used UserSocialAuth instance defined
-        # in authenticate process
-        social_user = user.social_user
-
-        if SESSION_EXPIRATION :
-            # Set session expiration date if present and not disabled by
-            # setting. Use last social-auth instance for current provider,
-            # users can associate several accounts with a same provider.
-            if social_user.expiration_delta():
-                request.session.set_expiry(social_user.expiration_delta())
-
-        # store last login backend name in session
-        request.session[SOCIAL_AUTH_LAST_LOGIN] = social_user.provider
-
-        # Remove possible redirect URL from session, if this is a new account,
-        # send him to the new-users-page if defined.
-        url = NEW_USER_REDIRECT if NEW_USER_REDIRECT and \
-                                   getattr(user, 'is_new', False) else \
-              request.session.pop(REDIRECT_FIELD_NAME, '') or \
-              DEFAULT_REDIRECT
-    else:
-        url = LOGIN_ERROR_URL
-    return HttpResponseRedirect(url)
+    return complete_process(request, backend, *args, **kwargs)
 
 
 @login_required
@@ -119,9 +120,9 @@ def associate(request, backend):
 @csrf_exempt
 @login_required
 @dsa_view()
-def associate_complete(request, backend):
+def associate_complete(request, backend, *args, **kwargs):
     """Authentication complete process"""
-    if auth_complete(request, backend, request.user):
+    if auth_complete(request, backend, request.user, *args, **kwargs):
         url = NEW_ASSOCIATION_REDIRECT if NEW_ASSOCIATION_REDIRECT else \
               request.session.pop(REDIRECT_FIELD_NAME, '') or \
               DEFAULT_REDIRECT
@@ -148,8 +149,10 @@ def auth_process(request, backend):
         data = request.POST if request.method == 'POST' else request.GET
         if REDIRECT_FIELD_NAME in data:
             # Check and sanitize a user-defined GET/POST redirect_to field value.
-            redirect = sanitize_redirect(request.get_host(),
-                                         data[REDIRECT_FIELD_NAME])
+            redirect = data[REDIRECT_FIELD_NAME]
+
+            if SANITIZE_REDIRECTS:
+                redirect = sanitize_redirect(request.get_host(), redirect)
             request.session[REDIRECT_FIELD_NAME] = redirect or DEFAULT_REDIRECT
 
     if backend.uses_redirect:
@@ -159,13 +162,9 @@ def auth_process(request, backend):
                             content_type='text/html;charset=UTF-8')
 
 
-class HttpResponseException(Exception):
-    def __init__(self, response):
-        self.response = response
-
-
-def complete_process(request, backend):
+def complete_process(request, backend, *args, **kwargs):
     """Authentication complete process"""
+    user = auth_complete(request, backend, *args, **kwargs)
 
     try:
         user = auth_complete(request, backend)
@@ -199,15 +198,8 @@ def complete_process(request, backend):
     return HttpResponseRedirect(url)
 
 
-def auth_complete(request, backend, user=None):
+def auth_complete(request, backend, user=None, *args, **kwargs):
     """Complete auth process. Return authenticated user or None."""
     if user and not user.is_authenticated():
         user = None
-
-    try:
-        user = backend.auth_complete(user=user, request=request)
-    except ValueError, e:  # some Authentication error ocurred
-        error_key = getattr(settings, 'SOCIAL_AUTH_ERROR_KEY', None)
-        if error_key:  # store error in session
-            request.session[error_key] = str(e)
-    return user
+    return backend.auth_complete(user=user, *args, **kwargs)

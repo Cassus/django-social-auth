@@ -41,6 +41,7 @@ credentials, some features are:
     * `Orkut OAuth`_
     * `Linkedin OAuth`_
     * `Foursquare OAuth2`_
+    * `GitHub OAuth`_
 
 - Basic user data population and signaling, to allows custom fields values
   from providers response
@@ -109,9 +110,10 @@ Configuration
         'social_auth.backends.google.GoogleBackend',
         'social_auth.backends.yahoo.YahooBackend',
         'social_auth.backends.contrib.linkedin.LinkedinBackend',
-        'social_auth.backends.contrib.LiveJournalBackend',
+        'social_auth.backends.contrib.livejournal.LiveJournalBackend',
         'social_auth.backends.contrib.orkut.OrkutBackend',
-        'social_auth.backends.contrib.orkut.FoursquareBackend',
+        'social_auth.backends.contrib.foursquare.FoursquareBackend',
+        'social_auth.backends.contrib.github.GithubBackend',
         'social_auth.backends.OpenIDBackend',
         'django.contrib.auth.backends.ModelBackend',
     )
@@ -146,10 +148,12 @@ Configuration
     ORKUT_CONSUMER_SECRET        = ''
     GOOGLE_CONSUMER_KEY          = ''
     GOOGLE_CONSUMER_SECRET       = ''
-    GOOGLE_OAUTH2_CLIENT_KEY     = ''
+    GOOGLE_OAUTH2_CLIENT_ID      = ''
     GOOGLE_OAUTH2_CLIENT_SECRET  = ''
     FOURSQUARE_CONSUMER_KEY      = ''
     FOURSQUARE_CONSUMER_SECRET   = ''
+    GITHUB_APP_ID                = ''
+    GITHUB_API_SECRET            = ''
 
 - Setup login URLs::
 
@@ -288,6 +292,21 @@ Configuration
   This behavior is disabled by default (false) unless specifically set::
 
       SOCIAL_AUTH_ASSOCIATE_BY_MAIL = True
+
+- You can send extra parameters on auth process by defining settings per
+  provider, example to request Facebook to show Mobile authorization page,
+  define::
+
+      FACEBOOK_AUTH_EXTRA_ARGUMENTS = {'display': 'touch'}
+
+  For other providers, just define settings in the form::
+
+      <uppercase backend name>_AUTH_EXTRA_ARGUMENTS = {...}
+
+- By default the application doesn't make redirects to different domains, to
+  disable this behavior::
+
+      SOCIAL_AUTH_SANITIZE_REDIRECTS = False
 
 
 -------
@@ -495,11 +514,14 @@ an application and apply for a set of keys. Check `Google OAuth2`_ document for 
 
 To enable OAuth2 support:
 
-- fill ``Client Key`` and ``Client Secret`` settings, these values can be obtained
+- fill ``Client ID`` and ``Client Secret`` settings, these values can be obtained
   easily as described on `OAuth2 Registering`_ doc::
 
-      GOOGLE_OAUTH2_CLIENT_KEY = ''
+      GOOGLE_OAUTH2_CLIENT_ID = ''
       GOOGLE_OAUTH2_CLIENT_SECRET = ''
+
+  previous name ``GOOGLE_OAUTH2_CLIENT_KEY`` is supported for backward
+  compatibility.
 
 - scopes are shared between OAuth mechanisms::
 
@@ -522,6 +544,23 @@ way the values will be stored in ``UserSocialAuth.extra_data`` field.
 By default ``id``, ``first-name`` and ``last-name`` are requested and stored.
 
 
+------
+GitHub
+------
+GitHub works similar to Facebook (OAuth).
+
+- Register a new application at `GitHub Developers`_, and
+
+- fill ``App Id`` and ``App Secret`` values in the settings::
+
+      GITHUB_APP_ID = ''
+      GITHUB_API_SECRET = ''
+
+- also it's possible to define extra permissions with::
+
+     GITHUB_EXTENDED_PERMISSIONS = [...]
+ 
+
 -------
 Testing
 -------
@@ -543,7 +582,7 @@ credentials in the following way::
     TEST_FACEBOOK_USER = 'testing_account'
     TEST_FACEBOOK_PASSWORD = 'password_for_testing_account'
 
-    # goole testing
+    # google testing
     TEST_GOOGLE_USER = 'testing_account@gmail.com'
     TEST_GOOGLE_PASSWORD = 'password_for_testing_account'
 
@@ -582,6 +621,13 @@ If defining a custom user model, do not import social_auth from any models.py
 that would finally import from the models.py that defines your User class or it
 will make your project fail with a recursive import because social_auth uses
 get_model() to retrieve your User.
+
+
+There's an ongoing movement to create a list of third party backends on
+djangopackages.com_, so, if somebody doesn't want it's backend in the
+``contrib`` directory but still wants to share, just split it in a separated
+package and link it there.
+
 
 ----
 Bugs
@@ -625,6 +671,10 @@ Attributions to whom deserves:
 - bedspax_
 
   - Foursquare support
+
+- revolunet_ (Julien Bouquillon)
+
+  - GitHub support
 
 ----------
 Copyrights
@@ -695,3 +745,7 @@ Base work is copyrighted by:
 .. _Selenium: http://seleniumhq.org/
 .. _LinkedIn fields selectors: http://developer.linkedin.com/docs/DOC-1014
 .. _Read the Docs: http://django-social-auth.readthedocs.org/
+.. _revolunet: https://github.com/revolunet
+.. _GitHub OAuth: http://developer.github.com/v3/oauth/
+.. _GitHub Developers: https://github.com/account/applications/new
+.. _djangopackages.com: http://djangopackages.com/grids/g/social-auth-backends/

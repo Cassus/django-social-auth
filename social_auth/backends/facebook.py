@@ -11,30 +11,27 @@ setting, it must be a list of values to request.
 By default account id and token expiration time are stored in extra_data
 field, check OAuthBackend class for details on how to extend it.
 """
-import cgi
 import logging
-from random import random
+logger = logging.getLogger(__name__)
+
+import cgi
 from urllib import urlencode
-from urllib2 import urlopen, URLError
+from urllib2 import urlopen
 
 from django.conf import settings
-from django.contrib.auth.models import get_hexdigest
 from django.utils import simplejson
 from django.contrib.auth import authenticate
 
-from social_auth.backends import BaseOAuth, OAuthBackend, USERNAME
+from social_auth.backends import BaseOAuth2, OAuthBackend, USERNAME
+from social_auth.utils import sanitize_log_data
 
 
 # Facebook configuration
-FACEBOOK_SERVER = 'graph.facebook.com'
-FACEBOOK_AUTHORIZATION_URL = 'https://%s/oauth/authorize' % FACEBOOK_SERVER
-FACEBOOK_ACCESS_TOKEN_URL = 'https://%s/oauth/access_token' % FACEBOOK_SERVER
-FACEBOOK_CHECK_AUTH = 'https://%s/me' % FACEBOOK_SERVER
 EXPIRES_NAME = getattr(settings, 'SOCIAL_AUTH_EXPIRATION', 'expires')
 
 
 class FacebookBackend(OAuthBackend):
-    """Facebook OAuth authentication backend"""
+    """Facebook OAuth2 authentication backend"""
     name = 'facebook'
     # Default extra data to store
     EXTRA_DATA = [('id', 'id'), ('expires', EXPIRES_NAME)]
@@ -48,91 +45,67 @@ class FacebookBackend(OAuthBackend):
                 'last_name': response.get('last_name', '')}
 
 
-class FacebookAuth(BaseOAuth):
-    """Facebook OAuth mechanism"""
+
+class FacebookAuth(BaseOAuth2):
+    """Facebook OAuth2 support"""
     AUTH_BACKEND = FacebookBackend
+    RESPONSE_TYPE = None
+    SCOPE_SEPARATOR = ','
+    AUTHORIZATION_URL = 'https://www.facebook.com/dialog/oauth'
+    SETTINGS_KEY_NAME = 'FACEBOOK_APP_ID'
+    SETTINGS_SECRET_NAME = 'FACEBOOK_API_SECRET'
 
-    def auth_url(self):
-        """Returns redirect url"""
-        state = get_hexdigest('md5', str(random()), str(random()))[:6]
-        self.request.session['state'] = state
+    def get_scope(self):
+        return getattr(settings, 'FACEBOOK_EXTENDED_PERMISSIONS', [])
 
-        #TODO for debugging
-        meta = {}
-        for key in ('HTTP_COOKIE', 'HTTP_USER_AGENT', 'REQUEST_URI', 'REMOTE_ADDR'):
-            if key in self.request.META:
-                meta[key] = self.request.META[key]
-        logging.getLogger('social_auth').info('fb_state_set %s %s' % (state, meta))
-        #end debugging
+    def user_data(self, access_token):
+        """Loads user data from service"""
+        params = {'access_token': access_token,}
+        url = 'https://graph.facebook.com/me?' + urlencode(params)
+        try:
+            data = simplejson.load(urlopen(url, 30))
+            logger.debug('Found user data for token %s',
+                         sanitize_log_data(access_token),
+                         extra=dict(data=data))
+            return data
 
-        args = {'client_id': settings.FACEBOOK_APP_ID,
-                'redirect_uri': self.redirect_uri,
-                'state': state,
-                }
-        if hasattr(settings, 'FACEBOOK_EXTENDED_PERMISSIONS'):
-            args['scope'] = ','.join(settings.FACEBOOK_EXTENDED_PERMISSIONS)
-        return FACEBOOK_AUTHORIZATION_URL + '?' + urlencode(args)
+        except ValueError:
+            params.update({'access_token': sanitize_log_data(access_token)})
+            logger.error('Could not load user data from Facebook.',
+                         exc_info=True, extra=dict(data=params))
+            return None
 
     def auth_complete(self, *args, **kwargs):
-        """Returns user, might be logged in"""
+        """Completes loging process, must return user instance"""
         if 'code' in self.data:
-            session_state = self.request.session.get('state')
-            facebook_state = self.data['state']
-            if facebook_state != session_state:
-                #TODO remove logging before merging to Trunk
-                meta = {}
-                for key in ('HTTP_COOKIE', 'HTTP_USER_AGENT', 'REQUEST_URI', 'REMOTE_ADDR'):
-                    if key in self.request.META:
-                        meta[key] = self.request.META[key]
-                logging.getLogger('social_auth').warning('invalid_or_missing_state %s %s %s' % (session_state, facebook_state, meta))
-                #error = "invalid or missing state"
-                #raise ValueError('Authentication error: %s' % error)
-
-            url = FACEBOOK_ACCESS_TOKEN_URL + '?' + \
+            url = 'https://graph.facebook.com/oauth/access_token?' + \
                   urlencode({'client_id': settings.FACEBOOK_APP_ID,
-                                'redirect_uri': self.redirect_uri,
-                                'client_secret': settings.FACEBOOK_API_SECRET,
-                                'code': self.data['code']})
-            try:
-                response = cgi.parse_qs(urlopen(url, timeout=30).read())
-            except URLError, e:
-                logging.getLogger('social_auth').error('facebook_url_error %e' % e.message)
-                raise ValueError(e.message)
-                
+                             'redirect_uri': self.redirect_uri,
+                             'client_secret': settings.FACEBOOK_API_SECRET,
+                             'code': self.data['code']})
+            response = cgi.parse_qs(urlopen(url, 30).read())
             access_token = response['access_token'][0]
             data = self.user_data(access_token)
-            data['access_token'] = access_token
-            # expires will not be part of response if offline access
-            # premission was requested
-            if 'expires' in response:
-                data['expires'] = response['expires'][0]
-            kwargs.update({'response': data, FacebookBackend.name: True})
+            if data is not None:
+                if 'error' in data:
+                    error = self.data.get('error') or 'unknown error'
+                    raise ValueError('Authentication error: %s' % error)
+                data['access_token'] = access_token
+                # expires will not be part of response if offline access
+                # premission was requested
+                if 'expires' in response:
+                    data['expires'] = response['expires'][0]
+            kwargs.update({'response': data, self.AUTH_BACKEND.name: True})
             return authenticate(*args, **kwargs)
         else:
             error = self.data.get('error') or 'unknown error'
             raise ValueError('Authentication error: %s' % error)
 
-    def user_data(self, access_token):
-        """Loads user data from service"""
-        params = {'access_token': access_token, }
-        url = FACEBOOK_CHECK_AUTH + '?' + urlencode(params)
-        try:
-            data = simplejson.load(urlopen(url, timeout=30))
-        except (URLError, ValueError), e:
-            raise ValueError('Authentication error: %s' % e.message)
-        if not isinstance(data, dict):
-            raise ValueError('Authentication error: bad_response_type')
-        if 'error' in data:
-            error = self.data.get('error') or 'unknown error'
-            raise ValueError('Authentication error: %s' % error)
-        return data
-
     @classmethod
     def enabled(cls):
         """Return backend enabled status by checking basic settings"""
-        return all(hasattr(settings, name) for name in
-                        ('FACEBOOK_APP_ID',
-                         'FACEBOOK_API_SECRET'))
+        return all(hasattr(settings, name) for name in ('FACEBOOK_APP_ID',
+                                                        'FACEBOOK_API_SECRET'))
 
 
 # Backend definition

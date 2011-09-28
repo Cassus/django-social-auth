@@ -18,9 +18,10 @@ Configuration
         'social_auth.backends.google.GoogleBackend',
         'social_auth.backends.yahoo.YahooBackend',
         'social_auth.backends.contrib.linkedin.LinkedinBackend',
-        'social_auth.backends.contrib.LiveJournalBackend',
+        'social_auth.backends.contrib.livejournal.LiveJournalBackend',
         'social_auth.backends.contrib.orkut.OrkutBackend',
-        'social_auth.backends.contrib.orkut.FoursquareBackend',
+        'social_auth.backends.contrib.foursquare.FoursquareBackend',
+        'social_auth.backends.contrib.github.GithubBackend',
         'social_auth.backends.OpenIDBackend',
         'django.contrib.auth.backends.ModelBackend',
     )
@@ -55,7 +56,7 @@ Configuration
     ORKUT_CONSUMER_SECRET        = ''
     GOOGLE_CONSUMER_KEY          = ''
     GOOGLE_CONSUMER_SECRET       = ''
-    GOOGLE_OAUTH2_CLIENT_KEY     = ''
+    GOOGLE_OAUTH2_CLIENT_ID      = ''
     GOOGLE_OAUTH2_CLIENT_SECRET  = ''
     FOURSQUARE_CONSUMER_KEY      = ''
     FOURSQUARE_CONSUMER_SECRET   = ''
@@ -196,6 +197,21 @@ Configuration
   by more than one account). This behavior is disabled by default unless::
 
       SOCIAL_AUTH_ASSOCIATE_BY_MAIL = True
+
+- You can send extra parameters on auth process by defining settings per
+  provider, example to request Facebook to show Mobile authorization page,
+  define::
+
+      FACEBOOK_AUTH_EXTRA_ARGUMENTS = {'display': 'touch'}
+
+  For other providers, just define settings in the form::
+
+      <uppercase backend name>_AUTH_EXTRA_ARGUMENTS = {...}
+
+- By default the application doesn't make redirects to different domains, to
+  disable this behavior::
+
+      SOCIAL_AUTH_SANITIZE_REDIRECTS = False
 
 
 .. _Model Manager: http://docs.djangoproject.com/en/dev/topics/db/managers/#managers
