@@ -162,7 +162,8 @@ class SocialAuthBackend(ModelBackend):
 
         # Raise ValueError if this account was registered by another user.
         if user and user != social_user.user:
-            raise ValueError('Account already in use.', social_user)
+            logger.info('Account already in use', extra=dict(data=details))
+            return None
         user = social_user.user
 
         # Flag user "new" status
