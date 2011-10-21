@@ -19,6 +19,7 @@ from uuid import uuid4
 from urllib2 import Request, urlopen
 from urllib import urlencode
 from urlparse import urlsplit
+from gargoyle import gargoyle
 
 from openid.consumer.consumer import Consumer, SUCCESS, CANCEL, FAILURE
 from openid.consumer.discover import DiscoveryFailure
@@ -123,7 +124,7 @@ class SocialAuthBackend(ModelBackend):
                     if user is not None:
                         is_new = True
                         break
-            
+
             if user is None:  # new user
                 if not CREATE_USERS or not kwargs.get('create_user', True):
                     # Send signal for cases where tracking failed registering
@@ -779,6 +780,9 @@ def get_backends():
 BACKENDS = get_backends()
 BACKENDS[OpenIdAuth.AUTH_BACKEND.name] = OpenIdAuth
 
-def get_backend(name, *args, **kwargs):
+def get_backend(name, request, *args, **kwargs):
     """Return auth backend instance *if* it's registered, None in other case"""
-    return BACKENDS.get(name, lambda *args, **kwargs: None)(*args, **kwargs)
+    if gargoyle.is_active('mock-social', request):
+        return BACKENDS["mock_%s" % name](request, *args, **kwargs)
+
+    return BACKENDS.get(name, lambda *args, **kwargs: None)(request, *args, **kwargs)
