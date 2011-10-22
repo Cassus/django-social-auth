@@ -45,7 +45,6 @@ class FacebookBackend(OAuthBackend):
                 'last_name': response.get('last_name', '')}
 
 
-
 class FacebookAuth(BaseOAuth2):
     """Facebook OAuth2 support"""
     AUTH_BACKEND = FacebookBackend
@@ -60,7 +59,7 @@ class FacebookAuth(BaseOAuth2):
 
     def user_data(self, access_token):
         """Loads user data from service"""
-        params = {'access_token': access_token,}
+        params = {'access_token': access_token}
         url = 'https://graph.facebook.com/me?' + urlencode(params)
         try:
             data = simplejson.load(urlopen(url, timeout=30))
@@ -115,7 +114,36 @@ class FacebookAuth(BaseOAuth2):
                                                         'FACEBOOK_API_SECRET'))
 
 
+class MockFacebookAuth(BaseOAuth2):
+    AUTH_BACKEND = FacebookBackend
+
+    def auth_url(self):
+        return self.redirect_uri
+
+    def user_data(self, access_token):
+        return {
+            u'first_name': u'Prezi',
+            u'last_name': u'Pista',
+            u'name': u'Prezi Pista',
+            u'locale': u'en_US',
+            u'gender': u'male',
+            u'email': u'mock_facebbok@example.com',
+            u'link': u'http://www.facebook.com/profile.php?id=100002345677890',
+            u'timezone': 2,
+            u'updated_time': u'2011-10-19T04:44:19+0000',
+            u'id': u'100002345677890',
+            }
+
+    def auth_complete(self, *args, **kwargs):
+        access_token = 'MOCK'
+        data = self.user_data(access_token)
+        data['access_token'] = access_token
+        kwargs.update({'response': data, self.AUTH_BACKEND.name: True})
+        return authenticate(**kwargs)
+
+
 # Backend definition
 BACKENDS = {
     'facebook': FacebookAuth,
+    'mock_facebook': MockFacebookAuth,
 }
