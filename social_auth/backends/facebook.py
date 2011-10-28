@@ -127,7 +127,7 @@ class MockFacebookAuth(BaseOAuth2):
             u'name': u'Prezi Pista',
             u'locale': u'en_US',
             u'gender': u'male',
-            u'email': u'mock_facebbok@example.com',
+            u'email': u'mock_facebook@example.com',
             u'link': u'http://www.facebook.com/profile.php?id=100002345677890',
             u'timezone': 2,
             u'updated_time': u'2011-10-19T04:44:19+0000',
